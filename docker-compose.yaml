@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - MCP_SERVER_URL=${MCP_SERVER_URL}
+      - MCP_SERVER_TOKEN=${MCP_SERVER_TOKEN}
+      - PORT=10000
+    ports:
+      - "10000:10000"
+    networks:
+      - snowflake-agent-net
+
+networks:
+  snowflake-agent-net:
