@@ -1,8 +1,9 @@
 {
     "env_vars": {
         "AUTH_ID": "snowflake-oauth-v6",
-        "MCP_SERVER_URL": "https://HIJZKAO-RG62005.snowflakecomputing.com/api/v2/databases/dash_mcp_db/schemas/data/mcp-servers/dash_mcp_server",
+        "MCP_SERVER_URL": "https://<account>.snowflakecomputing.com/api/v2/databases/<db>/schemas/<schema>/mcp-servers/<server>",
         "GOOGLE_API_KEY": "<your-google-api-key>",
+        "MCP_TIMEOUT_SECONDS": "30",
         "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "true"
     }

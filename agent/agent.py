@@ -35,7 +35,7 @@ if not mcp_url:
 
 root_agent = LlmAgent(
     model="gemini-2.5-flash",
-    name="snowflake_agent",
+    name="SnowflakeMCP",
     description="A helpful assistant for Snowflake database operations with per-user authentication.",
     instruction=SYSTEM_INSTRUCTION,
     tools=SNOWFLAKE_TOOLS,

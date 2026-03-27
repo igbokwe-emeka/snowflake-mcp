@@ -1,0 +1,155 @@
+#!/bin/bash
+set -euo pipefail
+
+# =============================================================================
+# Snowflake Agent — Gemini Enterprise Registration
+# =============================================================================
+# 1. Looks up the latest Reasoning Engine deployed in Vertex AI Agent Engine
+# 2. Recreates the OAuth authorization resource in Gemini Enterprise
+# 3. Registers the agent pointing at that Reasoning Engine
+#
+# Prerequisites:
+#   - gcloud CLI authenticated (gcloud auth login)
+#   - CLIENT_SECRET exported in the environment
+#
+# Usage:
+#   cp scripts/register_agent.sh.example scripts/register_agent.sh
+#   # Fill in the configuration variables below
+#   export CLIENT_SECRET="<your-azure-ad-client-secret>"
+#   bash scripts/register_agent.sh
+#
+# To pin a specific Reasoning Engine instead of using the latest:
+#   export REASONING_ENGINE_ID="<id>"
+#   bash scripts/register_agent.sh
+# =============================================================================
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+PROJECT_NUMBER="<your-gcp-project-number>"   # e.g. 1234567890123
+PROJECT_ID="<your-gcp-project-id>"           # e.g. my-project
+LOCATION="us"                                 # Discovery Engine region
+AUTH_ID="<your-auth-id>"                      # e.g. snowflake-oauth-v1
+ENGINE_ID="<your-engine-id>"                  # Gemini Enterprise engine ID
+
+# Entra ID (Azure AD) OAuth app
+TENANTID="<your-azure-tenant-id>"
+CLIENTID="<your-azure-client-id>"
+
+# Load CLIENT_SECRET from environment to avoid committing it
+: "${CLIENT_SECRET:?CLIENT_SECRET must be set in the environment}"
+# ──────────────────────────────────────────────────────────────────────────────
+
+TOKEN=$(gcloud auth print-access-token)
+DISCOVERY_BASE="https://${LOCATION}-discoveryengine.googleapis.com/v1alpha"
+AUTH_RESOURCE="projects/${PROJECT_NUMBER}/locations/${LOCATION}/authorizations/${AUTH_ID}"
+
+# ── Resolve Reasoning Engine ID ───────────────────────────────────────────────
+AGENT_NAME="SnowflakeMCP"
+
+if [[ -z "${REASONING_ENGINE_ID:-}" ]]; then
+  echo "=== Fetching latest '${AGENT_NAME}' Reasoning Engine from Agent Engine ==="
+  ENGINES_RESPONSE=$(curl -s \
+    "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/${PROJECT_NUMBER}/locations/us-central1/reasoningEngines?pageSize=50" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "x-goog-user-project: ${PROJECT_ID}")
+
+  REASONING_ENGINE_ID=$(echo "$ENGINES_RESPONSE" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+engines = data.get('reasoningEngines', [])
+matches = [e for e in engines if e.get('displayName') == '${AGENT_NAME}']
+if not matches:
+    print('ERROR: No reasoning engine named ${AGENT_NAME} found in project', file=sys.stderr)
+    sys.exit(1)
+latest = sorted(matches, key=lambda x: x.get('createTime', ''), reverse=True)[0]
+print(latest['name'].split('/')[-1])
+")
+
+  if [[ -z "$REASONING_ENGINE_ID" ]]; then
+    echo "ERROR: Could not determine REASONING_ENGINE_ID from Agent Engine" >&2
+    exit 1
+  fi
+fi
+
+echo "Using Reasoning Engine ID: ${REASONING_ENGINE_ID}"
+echo ""
+
+# ── Step 1: Delete existing OAuth authorization ───────────────────────────────
+echo "=== Step 1: Deleting existing OAuth authorization (if present) ==="
+curl -s -o /dev/null -w "DELETE %{http_code}\n" -X DELETE \
+  "${DISCOVERY_BASE}/${AUTH_RESOURCE}" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "x-goog-user-project: ${PROJECT_ID}" || true
+
+# ── Step 2: Create OAuth authorization resource ───────────────────────────────
+echo ""
+echo "=== Step 2: Creating OAuth authorization resource ==="
+cat > /tmp/auth_payload.json << EOF
+{
+  "name": "${AUTH_RESOURCE}",
+  "displayName": "Snowflake OAuth",
+  "serverSideOauth2": {
+    "clientId": "${CLIENTID}",
+    "clientSecret": "${CLIENT_SECRET}",
+    "tokenUri": "https://login.microsoftonline.com/${TENANTID}/oauth2/v2.0/token",
+    "authorizationUri": "https://login.microsoftonline.com/${TENANTID}/oauth2/v2.0/authorize?response_type=code&response_mode=query",
+    "scopes": [
+      "api://${CLIENTID}/session:role-any",
+      "openid",
+      "offline_access"
+    ]
+  }
+}
+EOF
+
+RESPONSE2=$(curl -s -w "\n%{http_code}" -X POST \
+  "${DISCOVERY_BASE}/projects/${PROJECT_NUMBER}/locations/${LOCATION}/authorizations?authorizationId=${AUTH_ID}" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "x-goog-user-project: ${PROJECT_ID}" \
+  -H "Content-Type: application/json" \
+  --data @/tmp/auth_payload.json)
+HTTP2=$(echo "$RESPONSE2" | tail -1)
+echo "$RESPONSE2" | head -n -1 | python3 -m json.tool
+if [[ "$HTTP2" -lt 200 || "$HTTP2" -ge 300 ]]; then
+  echo "ERROR: Step 2 failed with HTTP $HTTP2" >&2
+  rm -f /tmp/auth_payload.json /tmp/agent_payload.json
+  exit 1
+fi
+
+# ── Step 3: Register agent in Gemini Enterprise ───────────────────────────────
+echo ""
+echo "=== Step 3: Registering agent in Gemini Enterprise ==="
+cat > /tmp/agent_payload.json << EOF
+{
+  "displayName": "SnowflakeMCP",
+  "description": "Agent responsible for querying Snowflake data securely using Entra ID OAuth.",
+  "adkAgentDefinition": {
+    "provisionedReasoningEngine": {
+      "reasoningEngine": "projects/${PROJECT_NUMBER}/locations/us-central1/reasoningEngines/${REASONING_ENGINE_ID}"
+    }
+  },
+  "authorizationConfig": {
+    "toolAuthorizations": [
+      "${AUTH_RESOURCE}"
+    ]
+  }
+}
+EOF
+
+RESPONSE3=$(curl -s -w "\n%{http_code}" -X POST \
+  "${DISCOVERY_BASE}/projects/${PROJECT_NUMBER}/locations/${LOCATION}/collections/default_collection/engines/${ENGINE_ID}/assistants/default_assistant/agents" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "x-goog-user-project:${PROJECT_ID}" \
+  -H "Content-Type: application/json" \
+  --data @/tmp/agent_payload.json)
+HTTP3=$(echo "$RESPONSE3" | tail -1)
+echo "$RESPONSE3" | head -n -1 | python3 -m json.tool
+if [[ "$HTTP3" -lt 200 || "$HTTP3" -ge 300 ]]; then
+  echo "ERROR: Step 3 failed with HTTP $HTTP3" >&2
+  rm -f /tmp/auth_payload.json /tmp/agent_payload.json
+  exit 1
+fi
+
+echo ""
+echo "=== Registration complete ==="
+echo "Agent registered with Reasoning Engine: ${REASONING_ENGINE_ID}"
+rm -f /tmp/auth_payload.json /tmp/agent_payload.json

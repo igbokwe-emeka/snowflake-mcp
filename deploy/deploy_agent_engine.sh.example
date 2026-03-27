@@ -1,0 +1,41 @@
+#!/bin/bash
+set -euo pipefail
+
+# =============================================================================
+# Snowflake Agent — Full Deployment Pipeline
+# =============================================================================
+# 1. Deploys the agent package to Vertex AI Agent Engine
+# 2. Calls register_agent.sh, which looks up the latest Reasoning Engine
+#    and registers it in Gemini Enterprise
+#
+# Prerequisites:
+#   - gcloud CLI authenticated (gcloud auth login)
+#   - ADK CLI installed (pip install google-adk)
+#   - CLIENT_SECRET exported in the environment
+#
+# Usage:
+#   cp scripts/deploy_agent_engine.sh.example scripts/deploy_agent_engine.sh
+#   # Fill in the configuration variables below
+#   export CLIENT_SECRET="<your-azure-ad-client-secret>"
+#   bash scripts/deploy_agent_engine.sh
+# =============================================================================
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+PROJECT_ID="<your-gcp-project-id>"          # e.g. my-project
+REGION="us-central1"                         # Agent Engine region
+STAGING_BUCKET="gs://<your-staging-bucket>" # GCS bucket used during deploy
+AGENT_DIR="./agent"                          # Path to the agent package
+# ──────────────────────────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "=== Step 1: Deploying agent to Vertex AI Agent Engine ==="
+adk deploy agent_engine \
+  --project="${PROJECT_ID}" \
+  --region="${REGION}" \
+  --staging_bucket="${STAGING_BUCKET}" \
+  "${AGENT_DIR}"
+
+echo ""
+echo "=== Step 2: Registering agent in Gemini Enterprise ==="
+bash "${SCRIPT_DIR}/register_agent.sh"

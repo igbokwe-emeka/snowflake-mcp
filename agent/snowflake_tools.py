@@ -24,6 +24,8 @@ _MCP_SEARCH_TOOL = "Support_Tickets_Cortex_Search"
 # Local dev/testing only
 DEV_TOKEN = os.getenv("DEV_TOKEN")
 
+MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT_SECONDS", "30"))
+
 
 def get_mcp_server_url() -> str:
     """Helper to get MCP server URL, ensuring it is set when needed."""
@@ -57,8 +59,8 @@ def get_user_token(tool_context: ToolContext) -> Optional[str]:
     # The Google ADK stores the actual dictionary inside the _value attribute of the State object
     state_dict = getattr(tool_context.state, "_value", {})
 
-    # Production: Gemini Enterprise injects token here
-    session_key = AUTH_ID
+    # Production: Gemini Enterprise injects token here under key temp:{AUTH_ID}
+    session_key = f"temp:{AUTH_ID}"
     token = state_dict.get(session_key)
     if token:
         safe_token = f"{token[:15]}...{token[-5:]}" if isinstance(token, str) and len(token) > 20 else "***"
@@ -157,7 +159,7 @@ async def call_mcp_tool(
     }
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=MCP_TIMEOUT) as client:
             response = await client.post(
                 mcp_url,
                 json=mcp_request,
@@ -322,8 +324,8 @@ async def check_auth_status(
     Returns:
         Authentication status report
     """
-    session_key = AUTH_ID
-    
+    session_key = f"temp:{AUTH_ID}"
+
     # The ADK stores the actual dictionary inside the _value attribute
     state_dict = getattr(tool_context.state, "_value", {})
     
